@@ -278,7 +278,7 @@ class PortfolioOptimizationEnv(gym.Env):
                 savefig=self._results_file / "portfolio_summary.png",
             )
 
-            return self._state, self._reward, self._terminal,False,self._info
+            return self._state, float(self._reward), bool(self._terminal),False,self._info
 
         else:
             # transform action to numpy array (if it's a list)
@@ -363,8 +363,8 @@ class PortfolioOptimizationEnv(gym.Env):
             self._reward = self._reward * self._reward_scaling
 
         if self._new_gym_api:
-            return self._state, self._reward, self._terminal, False, self._info
-        return self._state, self._reward, self._terminal, self._info
+            return self._state, float(self._reward), bool(self._terminal), False, self._info
+        return self._state, float(self._reward), bool(self._terminal), self._info
 
     def reset(self,*, seed=None, options=None):
         """Resets the environment and returns it to its initial state (the
