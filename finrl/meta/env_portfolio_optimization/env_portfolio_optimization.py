@@ -278,7 +278,13 @@ class PortfolioOptimizationEnv(gym.Env):
                 savefig=self._results_file / "portfolio_summary.png",
             )
 
-            return self._state, float(self._reward), bool(self._terminal),False,self._info
+            return (
+                self._state,
+                float(self._reward),
+                bool(self._terminal),
+                False,
+                self._info,
+            )
 
         else:
             # transform action to numpy array (if it's a list)
@@ -307,7 +313,9 @@ class PortfolioOptimizationEnv(gym.Env):
                 delta_weights = weights - last_weights
                 delta_assets = delta_weights[1:]  # disconsider
                 # calculate fees considering weights modification
-                fees = np.sum(np.abs(delta_assets * self._portfolio_value))
+                fees = self._comission_fee_pct * np.sum(
+                    np.abs(delta_assets * self._portfolio_value)
+                )
                 if fees > weights[0] * self._portfolio_value:
                     weights = last_weights
                     # maybe add negative reward
@@ -363,10 +371,16 @@ class PortfolioOptimizationEnv(gym.Env):
             self._reward = self._reward * self._reward_scaling
 
         if self._new_gym_api:
-            return self._state, float(self._reward), bool(self._terminal), False, self._info
+            return (
+                self._state,
+                float(self._reward),
+                bool(self._terminal),
+                False,
+                self._info,
+            )
         return self._state, float(self._reward), bool(self._terminal), self._info
 
-    def reset(self,*, seed=None, options=None):
+    def reset(self, *, seed=None, options=None):
         """Resets the environment and returns it to its initial state (the
         fist date of the dataframe).
 
@@ -395,7 +409,7 @@ class PortfolioOptimizationEnv(gym.Env):
         self._portfolio_value = self._initial_amount
         self._terminal = False
 
-        return self._state,self._info
+        return self._state, self._info
 
     def _get_state_and_info_from_time_index(self, time_index):
         """Gets state and information given a time index. It also updates "data"
