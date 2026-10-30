@@ -196,180 +196,260 @@ class PortfolioOptimizationEnv(gym.Env):
 
         self._portfolio_value = self._initial_amount
         self._terminal = False
+    def _apply_self_financing_fee(self, target_weights, last_weights):
+            """Apply proportional fees and return executable weights."""
+    
+            c = float(self._comission_fee_pct)
+            target = np.asarray(target_weights, dtype=np.float64)
+            previous = np.asarray(last_weights, dtype=np.float64)
+    
+            if not 0 <= c < 1:
+                raise ValueError("Commission rate must be in [0, 1).")
+    
+            if not np.all(np.isfinite(target)):
+                raise ValueError("Target weights must be finite.")
+    
+            if np.any(target < -1e-8):
+                raise ValueError("Negative target weights are not supported.")
+    
+            target = np.maximum(target, 0)
+            target = target / target.sum()
+    
+            if c == 0:
+                return target, 1.0
+    
+            def residual(mu):
+                turnover = np.abs(
+                    mu * target[1:] - previous[1:]
+                ).sum()
+                return mu + c * turnover - 1.0
+    
+            low, high = 0.0, 1.0
+    
+            for _ in range(100):
+                mid = (low + high) / 2.0
+    
+                if residual(mid) > 0:
+                    high = mid
+                else:
+                    low = mid
+    
+            mu = (low + high) / 2.0
+    
+            return target, mu
+    def _save_episode_results(self):
+        metrics_df = pd.DataFrame(
+            {
+                "date": self._date_memory,
+                "returns": self._portfolio_return_memory,
+                "rewards": self._portfolio_reward_memory,
+                "portfolio_values": self._asset_memory["final"],
+            }
+        )
+        metrics_df.set_index("date", inplace=True)
 
+        plt.plot(metrics_df["portfolio_values"], "r")
+        plt.title("Portfolio Value Over Time")
+        plt.xlabel("Time")
+        plt.ylabel("Portfolio value")
+        plt.savefig(self._results_file / "portfolio_value.png")
+        plt.close()
+
+        plt.plot(self._portfolio_reward_memory, "r")
+        plt.title("Reward Over Time")
+        plt.xlabel("Time")
+        plt.ylabel("Reward")
+        plt.savefig(self._results_file / "reward.png")
+        plt.close()
+
+        plt.plot(self._actions_memory)
+        plt.title("Actions performed")
+        plt.xlabel("Time")
+        plt.ylabel("Weight")
+        plt.savefig(self._results_file / "actions.png")
+        plt.close()
+
+        print("=================================")
+        print(
+            "Initial portfolio value:{}".format(
+                self._asset_memory["final"][0]
+            )
+        )
+        print(f"Final portfolio value: {self._portfolio_value}")
+        print(
+            "Final accumulative portfolio value: {}".format(
+                self._portfolio_value / self._asset_memory["final"][0]
+            )
+        )
+        print(
+            "Maximum DrawDown: {}".format(
+                qs.stats.max_drawdown(metrics_df["portfolio_values"])
+            )
+        )
+        print(
+            "Sharpe ratio: {}".format(
+                qs.stats.sharpe(metrics_df["returns"])
+            )
+        )
+        print("=================================")
+
+        qs.plots.snapshot(
+            metrics_df["returns"],
+            show=False,
+            savefig=self._results_file / "portfolio_summary.png",
+        )
+
+    
     def step(self, actions):
-        """Performs a simulation step.
-
-        Args:
-            actions: An unidimensional array containing the new portfolio
-                weights.
-
-        Note:
-            If the environment was created with "return_last_action" set to
-            True, the next state returned will be a Dict. If it's set to False,
-            the next state will be a Box. You can check the observation state
-            through the attribute "observation_space".
+        """Perform one portfolio simulation step.
 
         Returns:
-            If "new_gym_api" is set to True, the following tuple is returned:
-            (state, reward, terminal, truncated, info). If it's set to False,
-            the following tuple is returned: (state, reward, terminal, info).
-
-            state: Next simulation state.
-            reward: Reward related to the last performed action.
-            terminal: If True, the environment is in a terminal state.
-            truncated: If True, the environment has passed it's simulation
-                time limit. Currently, it's always False.
-            info: A dictionary containing informations about the last state.
+            Gymnasium:
+                (state, reward, terminated, truncated, info)
+            Legacy API:
+                (state, reward, terminated, info)
         """
-        self._terminal = self._time_index >= len(self._sorted_times) - 1
 
+        # 1. Prevent stepping after episode termination
         if self._terminal:
-            metrics_df = pd.DataFrame(
-                {
-                    "date": self._date_memory,
-                    "returns": self._portfolio_return_memory,
-                    "rewards": self._portfolio_reward_memory,
-                    "portfolio_values": self._asset_memory["final"],
-                }
-            )
-            metrics_df.set_index("date", inplace=True)
-
-            plt.plot(metrics_df["portfolio_values"], "r")
-            plt.title("Portfolio Value Over Time")
-            plt.xlabel("Time")
-            plt.ylabel("Portfolio value")
-            plt.savefig(self._results_file / "portfolio_value.png")
-            plt.close()
-
-            plt.plot(self._portfolio_reward_memory, "r")
-            plt.title("Reward Over Time")
-            plt.xlabel("Time")
-            plt.ylabel("Reward")
-            plt.savefig(self._results_file / "reward.png")
-            plt.close()
-
-            plt.plot(self._actions_memory)
-            plt.title("Actions performed")
-            plt.xlabel("Time")
-            plt.ylabel("Weight")
-            plt.savefig(self._results_file / "actions.png")
-            plt.close()
-
-            print("=================================")
-            print("Initial portfolio value:{}".format(self._asset_memory["final"][0]))
-            print(f"Final portfolio value: {self._portfolio_value}")
-            print(
-                "Final accumulative portfolio value: {}".format(
-                    self._portfolio_value / self._asset_memory["final"][0]
-                )
-            )
-            print(
-                "Maximum DrawDown: {}".format(
-                    qs.stats.max_drawdown(metrics_df["portfolio_values"])
-                )
-            )
-            print("Sharpe ratio: {}".format(qs.stats.sharpe(metrics_df["returns"])))
-            print("=================================")
-
-            qs.plots.snapshot(
-                metrics_df["returns"],
-                show=False,
-                savefig=self._results_file / "portfolio_summary.png",
+            raise RuntimeError(
+                "Episode already terminated. Call reset() before step()."
             )
 
-            return (
-                self._state,
-                float(self._reward),
-                bool(self._terminal),
-                False,
-                self._info,
-            )
+        # 2. Convert action to numpy array
+        actions = np.array(actions, dtype=np.float32)
 
+        # 3. Normalize action into portfolio weights
+        if (
+            math.isclose(np.sum(actions), 1, abs_tol=1e-6)
+            and np.min(actions) >= 0
+        ):
+            weights = actions
         else:
-            # transform action to numpy array (if it's a list)
-            actions = np.array(actions, dtype=np.float32)
+            weights = self._softmax_normalization(actions)
 
-            # if necessary, normalize weights
-            if math.isclose(np.sum(actions), 1, abs_tol=1e-6) and np.min(actions) >= 0:
-                weights = actions
-            else:
-                weights = self._softmax_normalization(actions)
+        # 4. Save requested portfolio weights
+        self._actions_memory.append(weights)
 
-            # save initial portfolio weights for this time step
-            self._actions_memory.append(weights)
+        # 5. Get previous portfolio weights
+        last_weights = self._final_weights[-1]
 
-            # get last step final weights and portfolio_value
-            last_weights = self._final_weights[-1]
-
-            # load next state
-            self._time_index += 1
-            self._state, self._info = self._get_state_and_info_from_time_index(
+        # 6. Advance to next market date
+        self._time_index += 1
+        self._state, self._info = (
+            self._get_state_and_info_from_time_index(
                 self._time_index
             )
+        )
 
-            # if using weights vector modifier, we need to modify weights vector
-            if self._comission_fee_model == "wvm":
-                delta_weights = weights - last_weights
-                delta_assets = delta_weights[1:]  # disconsider
-                # calculate fees considering weights modification
-                fees = self._comission_fee_pct * np.sum(
-                    np.abs(delta_assets * self._portfolio_value)
-                )
-                if fees > weights[0] * self._portfolio_value:
-                    weights = last_weights
-                    # maybe add negative reward
-                else:
-                    portfolio = weights * self._portfolio_value
-                    portfolio[0] -= fees
-                    self._portfolio_value = np.sum(portfolio)  # new portfolio value
-                    weights = portfolio / self._portfolio_value  # new weights
-            elif self._comission_fee_model == "trf":
-                last_mu = 1
-                mu = 1 - 2 * self._comission_fee_pct + self._comission_fee_pct**2
-                while abs(mu - last_mu) > 1e-10:
-                    last_mu = mu
-                    mu = (
-                        1
-                        - self._comission_fee_pct * weights[0]
-                        - (2 * self._comission_fee_pct - self._comission_fee_pct**2)
-                        * np.sum(np.maximum(last_weights[1:] - mu * weights[1:], 0))
-                    ) / (1 - self._comission_fee_pct * weights[0])
-                self._info["trf_mu"] = mu
-                self._portfolio_value = mu * self._portfolio_value
+        # 7. Apply transaction costs
+        if self._comission_fee_model == "wvm":
 
-            # save initial portfolio value of this time step
-            self._asset_memory["initial"].append(self._portfolio_value)
-
-            # time passes and time variation changes the portfolio distribution
-            portfolio = self._portfolio_value * (weights * self._price_variation)
-
-            # calculate new portfolio value and weights
-            self._portfolio_value = np.sum(portfolio)
-            weights = portfolio / self._portfolio_value
-
-            # save final portfolio value and weights of this time step
-            self._asset_memory["final"].append(self._portfolio_value)
-            self._final_weights.append(weights)
-
-            # save date memory
-            self._date_memory.append(self._info["end_time"])
-
-            # define portfolio return
-            rate_of_return = (
-                self._asset_memory["final"][-1] / self._asset_memory["final"][-2]
+            weights, mu = self._apply_self_financing_fee(
+                weights, last_weights
             )
-            portfolio_return = rate_of_return - 1
-            portfolio_reward = np.log(rate_of_return)
 
-            # save portfolio return memory
-            self._portfolio_return_memory.append(portfolio_return)
-            self._portfolio_reward_memory.append(portfolio_reward)
+            value_before_fee = self._portfolio_value
+            self._portfolio_value *= mu
 
-            # Define portfolio return
-            self._reward = portfolio_reward
-            self._reward = self._reward * self._reward_scaling
+            self._info["transaction_fee"] = (
+                value_before_fee * (1.0 - mu)
+            )
+            self._info["fee_mu"] = mu
 
+        elif self._comission_fee_model == "trf":
+
+            last_mu = 1
+            mu = (
+                1
+                - 2 * self._comission_fee_pct
+                + self._comission_fee_pct**2
+            )
+
+            while abs(mu - last_mu) > 1e-10:
+                last_mu = mu
+
+                mu = (
+                    1
+                    - self._comission_fee_pct * weights[0]
+                    - (
+                        2 * self._comission_fee_pct
+                        - self._comission_fee_pct**2
+                    )
+                    * np.sum(
+                        np.maximum(
+                            last_weights[1:] - mu * weights[1:],
+                            0,
+                        )
+                    )
+                ) / (
+                    1 - self._comission_fee_pct * weights[0]
+                )
+
+            self._info["trf_mu"] = mu
+            self._portfolio_value = (
+                mu * self._portfolio_value
+            )
+
+        # 8. Save portfolio value after transaction costs
+        self._asset_memory["initial"].append(
+            self._portfolio_value
+        )
+
+        # 9. Apply market price variation
+        portfolio = (
+            self._portfolio_value
+            * (weights * self._price_variation)
+        )
+
+        # 10. Calculate new portfolio value and weights
+        self._portfolio_value = float(np.sum(portfolio))
+        weights = portfolio / self._portfolio_value
+
+        # 11. Save final portfolio state
+        self._asset_memory["final"].append(
+            self._portfolio_value
+        )
+        self._final_weights.append(weights)
+
+        # 12. Save date
+        self._date_memory.append(
+            self._info["end_time"]
+        )
+
+        # 13. Calculate portfolio return
+        rate_of_return = (
+            self._asset_memory["final"][-1]
+            / self._asset_memory["final"][-2]
+        )
+
+        portfolio_return = rate_of_return - 1
+        portfolio_reward = np.log(rate_of_return)
+
+        # 14. Save return and reward history
+        self._portfolio_return_memory.append(
+            portfolio_return
+        )
+        self._portfolio_reward_memory.append(
+            portfolio_reward
+        )
+
+        # 15. Set step reward
+        self._reward = float(
+            portfolio_reward * self._reward_scaling
+        )
+
+        # 16. Check termination after the final price update
+        self._terminal = (
+            self._time_index
+            >= len(self._sorted_times) - 1
+        )
+
+        # 17. Save statistics when episode finishes
+        if self._terminal:
+            self._save_episode_results()
+
+        # 18. Return Gymnasium-compatible result
         if self._new_gym_api:
             return (
                 self._state,
@@ -378,7 +458,16 @@ class PortfolioOptimizationEnv(gym.Env):
                 False,
                 self._info,
             )
-        return self._state, float(self._reward), bool(self._terminal), self._info
+
+        # Legacy Gym API
+        return (
+            self._state,
+            float(self._reward),
+            bool(self._terminal),
+            self._info,
+        )
+
+
 
     def reset(self, *, seed=None, options=None):
         """Resets the environment and returns it to its initial state (the
@@ -666,3 +755,4 @@ class PortfolioOptimizationEnv(gym.Env):
         e = DummyVecEnv([lambda: self] * env_number)
         obs = e.reset()
         return e, obs
+    
